@@ -1,0 +1,18 @@
+{
+  "name": "umessenger",
+  "version": "0.0.1",
+  "description": "A small real-time chat",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js"
+  },
+  "author": "UMG",
+  "license": "ISC",
+  "dependencies": {
+    "@upstash/redis": "^1.34.8",
+    "express": "^5.1.0",
+    "redis": "^4.7.0",
+    "socket.io": "^4.8.1"
+  }
+}
