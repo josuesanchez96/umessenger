@@ -14,8 +14,7 @@ import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
 import { MoreHorizontal, Send, Image, Smile, Archive, UserX, UserCheck, AlertCircle, Loader2 } from "lucide-react"
 import EmojiPicker from "@/components/emoji-picker"
-import { io } from "socket.io-client"
-import type { Socket } from "socket.io-client"
+import io from "socket.io-client"
 import type { Conversation } from "@/lib/types"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 
@@ -34,7 +33,7 @@ const SOCKET_URL = "http://localhost:3001"
 
 export default function ChatPage() {
   const [username, setUsername] = useState<string>("")
-  const [socket, setSocket] = useState<Socket | null>(null)
+  const [socket, setSocket] = useState<ReturnType<typeof io> | null>(null)
   const [onlineUsers, setOnlineUsers] = useState<string[]>([])
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [archivedConversations, setArchivedConversations] = useState<Conversation[]>([])
@@ -188,6 +187,27 @@ export default function ChatPage() {
     }
   }, [])
 
+  // On socket connect, list all conversations
+  useEffect(() => {
+    if (!socket || !username) return;
+    socket.emit('list_conversations', username);
+  }, [socket, username]);
+
+  // Listen for 'conversations' event and fetch last message for each
+  useEffect(() => {
+    if (!socket) return;
+    const handleConversations = (userList: string[]) => {
+      console.log('Received conversations:', userList);
+      userList.forEach(user => {
+        socket.emit('get_messages', { user1: username, user2: user });
+      });
+    };
+    socket.on('conversations', handleConversations);
+    return () => {
+      socket.off('conversations', handleConversations);
+    };
+  }, [socket, username]);
+
   const handleSendMessage = () => {
     if (!socket || !currentChat || !newMessage.trim()) return
 
@@ -196,7 +216,18 @@ export default function ChatPage() {
       recipient: currentChat,
       content: newMessage,
       timestamp: new Date().toISOString(),
+      id: Date.now().toString(), // Add a temporary ID for optimistic update
     }
+
+    // Optimistically add the message to the UI
+    setMessages((prev) => {
+      const chatKey = message.recipient
+      const existingMessages = prev[chatKey] || []
+      return {
+        ...prev,
+        [chatKey]: [...existingMessages, message],
+      }
+    })
 
     socket.emit("send_message", message)
     setNewMessage("")
@@ -208,7 +239,53 @@ export default function ChatPage() {
     setConversations((prev) =>
       prev.map((conv) => (conv.username === userId ? { ...conv, unreadCount: 0 } : conv)),
     )
+    // Fetch previous messages from the server
+    if (socket) {
+      socket.emit('get_messages', { user1: username, user2: userId })
+    }
   }
+
+  // Listen for the 'messages' event from the server
+  useEffect(() => {
+    if (!socket) return
+    const handleMessages = ({ chatKey, messages: msgs }: { chatKey: string, messages: ChatMessage[] }) => {
+      setMessages((prev) => ({
+        ...prev,
+        [chatKey]: msgs,
+      }))
+      if (msgs.length > 0) {
+        setConversations(prev => {
+          const existing = prev.find(c => c.username === chatKey);
+          const lastMsg = msgs[msgs.length - 1];
+          if (existing) {
+            // Update last message
+            return prev.map(c =>
+              c.username === chatKey
+                ? { ...c, lastMessage: lastMsg.content }
+                : c
+            );
+          } else {
+            // Add new conversation
+            return [
+              ...prev,
+              {
+                userId: chatKey,
+                username: chatKey,
+                lastMessage: lastMsg.content,
+                unreadCount: 0,
+                isArchived: false,
+                isBlocked: false,
+              }
+            ];
+          }
+        });
+      }
+    }
+    socket.on('messages', handleMessages)
+    return () => {
+      socket.off('messages', handleMessages)
+    }
+  }, [socket, conversations])
 
   const handleArchiveConversation = (userId: string) => {
     const conversation = conversations.find((c) => c.username === userId)

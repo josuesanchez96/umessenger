@@ -14,7 +14,7 @@ const io = new Server(server, {
 
 // Initialize Redis client
 const redis = createClient({
-  url: process.env.REDIS_URL
+  url: process.env.REDIS_URL || 'redis://localhost:6379'
 });
 
 // Connect to Redis
@@ -22,6 +22,11 @@ redis.connect().catch(console.error);
 
 // Map to store username -> socket.id mapping
 const users = {};
+
+// Helper to get a canonical chat key for two users
+function getChatKey(user1, user2) {
+  return [user1, user2].sort().join(':');
+}
 
 io.on('connection', async (socket) => {
     const username = socket.handshake.query.username;
@@ -55,13 +60,21 @@ io.on('connection', async (socket) => {
     socket.on('send_message', async (message) => {
         // Generate a unique ID for the message
         message.id = Date.now().toString();
-        
-        // Store message in Redis
-        await redis.lPush(`messages:${message.sender}:${message.recipient}`, JSON.stringify(message));
-        await redis.lPush(`messages:${message.recipient}:${message.sender}`, JSON.stringify(message));
-        
+        const chatKey = getChatKey(message.sender, message.recipient);
+        // Store message in Redis using canonical key
+        await redis.lPush(`messages:${chatKey}`, JSON.stringify(message));
         // Send message to recipient
         io.emit('message', message);
+    });
+
+    // Handle fetching message history
+    socket.on('get_messages', async ({ user1, user2 }) => {
+        const chatKey = getChatKey(user1, user2);
+        const messages = await redis.lRange(`messages:${chatKey}`, 0, -1);
+        const allMessages = messages
+            .map(m => JSON.parse(m))
+            .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        socket.emit('messages', { chatKey: user2, messages: allMessages });
     });
 
     // Handle disconnection
@@ -85,6 +98,21 @@ io.on('connection', async (socket) => {
         }));
         
         io.emit('users', usersList);
+    });
+
+    // List all conversations for a user
+    socket.on('list_conversations', async (username) => {
+        const keys = await redis.keys(`messages:*`);
+        const userConvs = new Set();
+        keys.forEach(key => {
+            const parts = key.split(':').slice(1); // remove 'messages'
+            if (parts.includes(username)) {
+                const otherUser = parts[0] === username ? parts[1] : parts[0];
+                if (otherUser !== username) userConvs.add(otherUser);
+            }
+        });
+        console.log('list_conversations', { username, keys, userConvs: Array.from(userConvs) });
+        socket.emit('conversations', Array.from(userConvs));
     });
 });
 
